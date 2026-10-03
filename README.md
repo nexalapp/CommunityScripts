@@ -1,6 +1,6 @@
 # Screenshots
 
-Images for the Theme-Reel, Theme-Velour and Theme-BlackHole README files and pull requests, taken on an empty Stash v0.31.1 with demo content. Not part of any plugin.
+Images for the Theme-Reel, Theme-Velour, Theme-BlackHole and Theme-Minimal README files and pull requests, taken on an empty Stash v0.31.1 with demo content. Not part of any plugin.
 
 ## Photo credits
 
