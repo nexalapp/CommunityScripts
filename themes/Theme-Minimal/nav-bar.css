@@ -38,6 +38,27 @@
 
   .navbar-brand {
     font-size: inherit;
+    .brand-link {
+      font-size: 17px;
+      font-weight: 600;
+      color: var(--primary-12);
+    }
+  }
+
+  /* desktop menu: words only, the active page lit */
+  @media (min-width: 1200px) {
+    .navbar-nav .nav-link > a.btn {
+      font-size: 13px;
+      font-weight: 500;
+      padding: 6px 12px !important;
+      border-radius: 10px;
+      .nav-menu-icon {
+        display: none !important; /* stock uses d-xl-inline, which is !important */
+      }
+      &.active {
+        background-color: var(--primary-3) !important;
+      }
+    }
   }
 
   .navbar-collapse {
