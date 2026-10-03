@@ -248,6 +248,10 @@
     }
   }
 
+  // Bump with the plugin version so browsers fetch updated snippets instead
+  // of reusing a cached copy (Stash sends no cache headers for plugin assets).
+  const ASSET_VERSION = "2.1.3";
+
   function addStyleSheet(key, path) {
     console.log(key, path);
     const styleSheet = document.createElement("link");
@@ -256,7 +260,7 @@
         document.querySelector("base")?.getAttribute("href") ?? "/";
     styleSheet.setAttribute(
       "href",
-      `${serverURL}plugin/themeSwitch/assets${path}`
+      `${serverURL}plugin/themeSwitch/assets${path}?v=${ASSET_VERSION}`
     );
     styleSheet.setAttribute("rel", "stylesheet");
     styleSheet.setAttribute("type", "text/css");
@@ -264,59 +268,94 @@
     document.getElementsByTagName("head")[0].appendChild(styleSheet);
   }
 
-  async function applyCSS(category, key, path, pluginId, pluginSrc) {
+  // Picking a theme enables exactly that theme's plugin and disables every
+  // other theme plugin in the list, including ones enabled from the Plugins
+  // page, so themes never stack. On page load only path-based themes need
+  // re-attaching; plugin themes load themselves.
+  async function applyCSS(category, key, path, pluginId, pluginSrc, picked) {
     if (category === "Themes") {
-      // Turn Off old Theme
-      let regex = /(themeSwitchPlugin-theme-.*)/;
-
-      for (let i = 0; i < localStorage.length; i++) {
-        let storageKey = localStorage.key(i);
-        let match = storageKey.match(regex);
-        if (
-          match &&
-          storageKey !== key &&
-          JSON.parse(localStorage.getItem(storageKey)).active === true
-        ) {
-          setObject(storageKey, category, false);
-          let element = document.getElementById(storageKey);
-          if (element && !pluginId) {
-            element.remove();
-          } else {
-            const oldThemePluginId = getDataFromKey(storageKey, "pluginId");
-            if (oldThemePluginId) {
-              await enablePlugin(oldThemePluginId, false);
-              setTimeout(() => {
-                location.reload();
-              }, 1000);
-            }
-          }
-        }
+      if (!picked) {
+        // Page load: re-attach a path-based theme; plugin themes load themselves.
+        if (path && !document.getElementById(key)) addStyleSheet(key, path);
+        return;
       }
 
-      const theme = JSON.parse(localStorage.getItem(key));
+      // Turn off the old theme in storage and drop any path-based sheet.
+      const regex = /(themeSwitchPlugin-theme-.*)/;
+      for (let i = 0; i < localStorage.length; i++) {
+        const storageKey = localStorage.key(i);
+        if (storageKey.match(regex) && storageKey !== key) {
+          await setObject(storageKey, category, false);
+          document.getElementById(storageKey)?.remove();
+        }
+      }
+      await setObject(key, category, true);
+      if (path && !document.getElementById(key)) addStyleSheet(key, path);
 
-      if (!theme && key != "themeSwitchPlugin-theme-default") {
-        setObject(key, category, true).then(() => {
-          addStyleSheet(key, path);
-        });
-      } else if (!theme && key === "themeSwitchPlugin-theme-default") {
-        setObject(key, category, true);
-      } else if (theme && key === "themeSwitchPlugin-theme-default") {
-        setObject(key, category, true);
-      } else if (theme && key !== "themeSwitchPlugin-theme-default") {
-        setObject(key, category, true).then(async () => {
-          if (pluginId) {
-            if (!(await isPluginInstalled(pluginId))) {
-              await installPlugin(pluginId, pluginSrc);
-            }
-            await enablePlugin(pluginId, true);
-            setTimeout(() => {
-              location.reload();
-            }, 1000);
-          } else if (path) {
-            addStyleSheet(key, path);
+      let installed = false;
+      if (pluginId && !(await isPluginInstalled(pluginId))) {
+        // installPackages runs as a job; wait for the plugin to register.
+        await installPlugin(pluginId, pluginSrc);
+        for (let i = 0; i < 30 && !(await isPluginInstalled(pluginId)); i++) {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+        installed = true;
+      }
+
+      // Exactly one theme plugin on: the chosen one (none for Default or a
+      // path-based theme).
+      const data = await csLib
+        .callGQL({
+          query: `query Plugins{plugins{id enabled paths{css javascript}}}`,
+        })
+        .catch((err) => console.error(err));
+      const plugins = new Map((data?.plugins ?? []).map((p) => [p.id, p]));
+      const enabledMap = {};
+      let needsReload = installed;
+      for (const theme of window.themeSwitchCSS.Themes) {
+        const plugin = plugins.get(theme.pluginId);
+        if (!plugin) continue;
+        const want = theme.pluginId === pluginId;
+        if (plugin.enabled !== want) enabledMap[theme.pluginId] = want;
+        // A theme's script can't be unloaded or loaded late: switching away
+        // from or to a theme that ships JavaScript still needs a reload.
+        if (plugin.paths?.javascript?.length && plugin.enabled !== want) {
+          needsReload = true;
+        }
+      }
+      if (Object.keys(enabledMap).length > 0) {
+        await csLib
+          .callGQL({
+            query:
+              "mutation SetPluginsEnabled($enabledMap: BoolMap!) { setPluginsEnabled(enabledMap: $enabledMap) }",
+            variables: { enabledMap },
+          })
+          .catch((err) => console.error(err));
+      }
+      if (needsReload) {
+        location.reload();
+        return;
+      }
+      // CSS-only themes switch in place: drop the other themes' stylesheets
+      // and add the chosen one's, with a cache-busting query so a stale copy
+      // is never reused.
+      for (const theme of window.themeSwitchCSS.Themes) {
+        const plugin = plugins.get(theme.pluginId);
+        if (!plugin) continue;
+        const marker = `/plugin/${theme.pluginId}/`;
+        const links = [...document.querySelectorAll("link[rel=stylesheet]")]
+          .filter((l) => l.href.includes(marker));
+        if (theme.pluginId !== pluginId) {
+          links.forEach((l) => l.remove());
+        } else if (!links.length) {
+          for (const href of plugin.paths?.css ?? []) {
+            const link = document.createElement("link");
+            link.rel = "stylesheet";
+            link.type = "text/css";
+            link.href = `${href}${href.includes("?") ? "&" : "?"}t=${Date.now()}`;
+            document.head.appendChild(link);
           }
-        });
+        }
       }
     } else {
       // CSS Other than themes
@@ -547,7 +586,8 @@
                           themeData.key,
                           themeData.path,
                           themeData.pluginId,
-                          themeData.pluginSrc
+                          themeData.pluginSrc,
+                          true
                         );
                       };
                     })(themeData),
@@ -701,7 +741,14 @@
         selectedTheme = JSON.parse(localStorage.getItem(key));
         if (selectedTheme.active === true) {
           appliedThemeOtherThanDefault.push("True");
-          applyCSS(selectedTheme.category, key, getDataFromKey(key, "path"));
+          // init() runs on every stash:location event (page changes, filter
+          // changes). Only attach what is missing: going through applyCSS
+          // here toggled an already-attached snippet back off.
+          if (selectedTheme.category === "Themes") {
+            applyCSS(selectedTheme.category, key, getDataFromKey(key, "path"));
+          } else if (!document.getElementById(key)) {
+            addStyleSheet(key, getDataFromKey(key, "path"));
+          }
         }
       }
     }
